@@ -632,6 +632,23 @@ fn app_paths_linux_detects_chatgpt_executable_and_builds_it() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn app_paths_linux_reads_package_metadata_and_falls_back_on_invalid_metadata() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = temp.path().join("chatgpt");
+    std::fs::create_dir_all(app.join("resources")).unwrap();
+    std::fs::write(app.join("ChatGPT"), "").unwrap();
+    std::fs::write(app.join("version"), "42.3.0").unwrap();
+    let metadata = app.join("resources/linux-package-metadata.json");
+    std::fs::write(&metadata, r#"{"version":"26.1007.71326","codexAppBrand":"chatgpt"}"#).unwrap();
+    assert_eq!(codex_app_version(&app).as_deref(), Some("26.1007.71326"));
+    for invalid in [r#"{"version":"invalid"}"#, r#"{"version":123}"#, "not json"] {
+        std::fs::write(&metadata, invalid).unwrap();
+        assert_eq!(codex_app_version(&app).as_deref(), Some("42.3.0"));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn app_paths_linux_finds_codex_app_from_search_roots_avoiding_empty_opt() {
     let temp = tempfile::tempdir().unwrap();
     // 模拟 /opt（空目录）

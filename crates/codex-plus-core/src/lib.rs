@@ -68,6 +68,8 @@ pub mod user_scripts;
 pub mod version;
 pub mod vision;
 pub mod watcher;
+#[cfg(target_os = "linux")]
+mod watcher_linux;
 pub mod whale;
 pub mod whale_full;
 // 不加 `#[cfg(windows)]`：模块内部各项已各自标注平台门控，在非 Windows 平台上

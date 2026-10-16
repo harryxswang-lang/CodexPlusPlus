@@ -967,12 +967,22 @@ pub fn find_session_index_cleanup_blocking_processes() -> Vec<u32> {
     find_codex_processes()
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+pub fn find_codex_processes() -> Vec<u32> {
+    crate::watcher_linux::process_ids(None)
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn find_codex_processes() -> Vec<u32> {
     Vec::new()
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+pub fn find_session_index_cleanup_blocking_processes() -> Vec<u32> {
+    find_codex_processes()
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn find_session_index_cleanup_blocking_processes() -> Vec<u32> {
     Vec::new()
 }
@@ -1377,7 +1387,12 @@ pub fn stop_codex_processes() {
     }
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+pub fn stop_codex_processes() {
+    crate::watcher_linux::stop_and_wait(None);
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn stop_codex_processes() {}
 
 #[cfg(target_os = "macos")]
@@ -1406,7 +1421,12 @@ pub fn stop_codex_processes_and_wait() {
     );
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+pub fn stop_codex_processes_and_wait() {
+    crate::watcher_linux::stop_and_wait(None);
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn stop_codex_processes_and_wait() {}
 
 #[cfg(target_os = "macos")]
@@ -1420,7 +1440,12 @@ pub fn find_codex_processes_for_debug_port(debug_port: u16) -> Vec<u32> {
     codex_instance_processes_for_debug_port(debug_port)
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+pub fn find_codex_processes_for_debug_port(debug_port: u16) -> Vec<u32> {
+    crate::watcher_linux::process_ids(Some(debug_port))
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn find_codex_processes_for_debug_port(_debug_port: u16) -> Vec<u32> {
     find_codex_processes()
 }
@@ -1552,7 +1577,12 @@ pub fn stop_codex_processes_for_debug_port_with_fallback(
     );
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+pub fn stop_codex_processes_for_debug_port_and_wait(debug_port: u16) {
+    crate::watcher_linux::stop_and_wait(Some(debug_port));
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 pub fn stop_codex_processes_for_debug_port_and_wait(_debug_port: u16) {
     stop_codex_processes_and_wait();
 }

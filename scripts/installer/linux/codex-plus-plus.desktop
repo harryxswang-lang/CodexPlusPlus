@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Codex++
+Comment=Configure providers and launch Codex desktop
+Exec=codex-plus-plus %u
+Icon=codex-plus-plus
+Type=Application
+Categories=Development;
+Terminal=false
+StartupNotify=true
+MimeType=x-scheme-handler/codexplusplus;x-scheme-handler/dreamskin;

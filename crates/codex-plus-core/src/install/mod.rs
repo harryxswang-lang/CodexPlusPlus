@@ -4,6 +4,7 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
+pub mod linux;
 pub mod macos;
 pub mod windows;
 
@@ -182,7 +183,12 @@ pub fn default_install_root() -> Option<PathBuf> {
         return Some(sys_apps);
     }
 
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        directories::BaseDirs::new().map(|dirs| dirs.data_dir().join("applications"))
+    }
+
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         directories::UserDirs::new().and_then(|dirs| dirs.desktop_dir().map(PathBuf::from))
     }
@@ -193,6 +199,8 @@ pub fn default_install_root_strategy() -> &'static str {
         "windows-known-folder"
     } else if cfg!(target_os = "macos") {
         "macos-applications"
+    } else if cfg!(target_os = "linux") {
+        "xdg-applications"
     } else {
         "user-dirs-desktop"
     }
@@ -209,7 +217,12 @@ fn platform_install(options: &InstallOptions) -> anyhow::Result<()> {
         macos::install_app_bundles(options)
     }
 
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::install_entrypoint(options)
+    }
+
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = options;
         anyhow::bail!("当前平台暂不支持安装 Codex++ 入口")
@@ -227,7 +240,12 @@ fn platform_uninstall(options: &InstallOptions) -> anyhow::Result<()> {
         macos::uninstall_app_bundles(options)
     }
 
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::uninstall_entrypoint(options)
+    }
+
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         let _ = options;
         anyhow::bail!("当前平台暂不支持卸载 Codex++ 入口")
@@ -261,6 +279,15 @@ fn entrypoint_candidates(root: &Option<PathBuf>) -> Vec<PathBuf> {
         vec![root.join(format!("{name}.lnk"))]
     } else if cfg!(target_os = "macos") {
         vec![root.join(format!("{name}.app"))]
+    } else if cfg!(target_os = "linux") {
+        let mut candidates = vec![root.join(linux::DESKTOP_FILE)];
+        let data_dirs = std::env::var_os("XDG_DATA_DIRS")
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+        candidates.extend(std::env::split_paths(&data_dirs)
+            .filter(|dir| dir.is_absolute())
+            .map(|dir| dir.join("applications").join(linux::DESKTOP_FILE)));
+        candidates
     } else {
         vec![root.join(format!("{name}.desktop"))]
     }

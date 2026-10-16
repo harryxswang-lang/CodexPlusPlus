@@ -278,6 +278,8 @@ Codex 用量挂件可在「Codex 增强 → 常用增强 → 挂件与桌宠」�
 
 ## 供应商与模型
 
+**本 fork 的 Ubuntu 本地版：**Ubuntu 24.04 amd64 的构建、安装和第三方模型使用步骤见 [Ubuntu 说明](scripts/installer/linux/README.md)。该版本通过本地 `.deb` 手动更新，平台专属功能的范围见说明。
+
 ### 选一种适合你的使用方式
 
 | 模式 | 适用场景 |

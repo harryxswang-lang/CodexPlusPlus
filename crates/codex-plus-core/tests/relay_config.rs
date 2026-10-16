@@ -51,6 +51,46 @@ fn assert_managed_catalog_pointer(home: &std::path::Path, config: &str, filename
     assert!(path.is_file(), "catalog 文件必须已写入：{pointer}");
 }
 
+#[test]
+fn third_party_profile_switch_updates_provider_model_auth_and_catalog_together() {
+    let temp = tempfile::tempdir().unwrap();
+    for (id, model, window) in [
+        ("ubuntu-a", "vendor-model-a", 128_000),
+        ("ubuntu-b", "vendor-model-b", 256_000),
+    ] {
+        let profile = RelayProfile {
+            id: id.to_string(),
+            relay_mode: RelayMode::PureApi,
+            protocol: RelayProtocol::Responses,
+            model: model.to_string(),
+            model_list: model.to_string(),
+            model_windows: serde_json::json!({ (model): window.to_string() }).to_string(),
+            config_contents: format!(
+                "model = \"{model}\"\nmodel_provider = \"custom\"\n\n\
+                 [model_providers.custom]\nname = \"{id}\"\nwire_api = \"responses\"\n\
+                 requires_openai_auth = true\nbase_url = \"https://{id}.example.test/v1\"\n"
+            ),
+            auth_contents: serde_json::json!({ "OPENAI_API_KEY": format!("test-key-{id}") }).to_string(),
+            ..RelayProfile::default()
+        };
+        apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+        let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        let doc: toml_edit::DocumentMut = config.parse().unwrap();
+        assert_eq!(doc["model"].as_str(), Some(model));
+        assert!(config.contains(&format!("https://{id}.example.test/v1")));
+        assert_managed_catalog_pointer(temp.path(), &config, &format!("{id}.json"));
+        let auth: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
+        ).unwrap();
+        assert_eq!(auth["OPENAI_API_KEY"], format!("test-key-{id}"));
+        let catalog: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(temp.path().join(format!("model-catalogs/{id}.json"))).unwrap(),
+        ).unwrap();
+        assert_eq!(catalog["models"][0]["slug"], model);
+        assert_eq!(catalog["models"][0]["context_window"], window);
+    }
+}
+
 /// 回归（issue #2147）：通用配置里混进「只有 `enabled_tools`、没有 `command`/`url`」
 /// 的残缺 MCP 条目时，合并后必须把它丢掉——codex 对缺传输方式的条目不是跳过，
 /// 而是拒载**整份** config.toml（`invalid transport`），用户表现是「编辑通用配置后

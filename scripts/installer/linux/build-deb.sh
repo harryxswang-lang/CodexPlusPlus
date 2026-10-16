@@ -1,215 +1,114 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 022
 
-# Codex++ Linux .deb 打包脚本
-# 用法: sudo bash scripts/installer/linux/build-deb.sh [VERSION]
-#       或分步执行下面的各个函数
-
+# Ubuntu 本机构建：不安装依赖、不提权、不删除历史产物。
+# 用法：bash scripts/installer/linux/build-deb.sh [--check|--package-only] [VERSION]
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 PROJECT_DIR="$REPO_DIR/apps/codex-plus-manager"
-BUILD_DIR="$REPO_DIR/.linux-build"
-DEB_DIR="$BUILD_DIR/deb"
-PACKAGE_NAME="codex-plus-plus"
-VERSION="${1:-1.3.0}"
+MODE=build
+case "${1:-}" in
+    --check) MODE=check; shift ;;
+    --package-only) MODE=package; shift ;;
+    --help|-h)
+        echo "用法: bash scripts/installer/linux/build-deb.sh [--check|--package-only] [VERSION]"
+        echo "先手动准备依赖；--check 只检查依赖，--package-only 打包已有 release 二进制。"
+        exit 0 ;;
+esac
+[ "$#" -le 1 ] || { echo "error: 参数过多" >&2; exit 1; }
+cd "$REPO_DIR"
+
+require_command() {
+    command -v "$1" >/dev/null || { echo "error: 缺少命令 $1，请手动安装。" >&2; exit 1; }
+}
+for command in node dpkg dpkg-deb dpkg-shlibdeps; do require_command "$command"; done
+[ "$(uname -s)" = Linux ] || { echo "error: 请在目标 Linux 系统上构建。" >&2; exit 1; }
+VERSION="${1:-$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).version)' "$PROJECT_DIR/package.json")}"
+dpkg --validate-version "$VERSION"
 ARCH="$(dpkg --print-architecture)"
-# Node / 包管理器：优先从环境变量取，其次探测 PATH。
-# 不要写死绝对路径——这里是给所有贡献者和 CI 用的，不是某台机器的构建脚本。
-NODE_BIN="${NODE_BIN:-$(command -v node || true)}"
-PNPM_BIN="${PNPM_BIN:-$(command -v pnpm || true)}"
+PACKAGE_NAME=codex-plus-plus
+TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_DIR/target}"
+[[ "$TARGET_DIR" = /* ]] || TARGET_DIR="$REPO_DIR/$TARGET_DIR"
+BINARY="$TARGET_DIR/release/codex-plus-plus"
+OUTPUT_DIR="$REPO_DIR/dist/linux"
 
-echo "=== Codex++ Linux .deb 构建 ==="
-echo "版本: $VERSION"
-echo "架构: $ARCH"
-echo "仓库: $REPO_DIR"
-
-# ── 1. 安装系统依赖（需要 sudo）───────────────────────────────
-install_system_deps() {
-    echo ">>> 安装系统依赖..."
-    sudo apt-get update -qq
-    sudo apt-get install -y --no-install-recommends \
-        build-essential \
-        curl \
-        git \
-        pkg-config \
-        libssl-dev \
-        libsqlite3-dev \
-        libdbus-1-dev \
-        libglib2.0-dev \
-        libgtk-3-dev \
-        libayatana-appindicator3-dev \
-        libjavascriptcoregtk-4.1-dev \
-        libwebkit2gtk-4.1-dev \
-        libsoup-3.0-dev \
-        libz3-dev
-    echo ">>> 系统依赖安装完成"
-}
-
-# ── 2. 安装 Rust toolchain（无需 sudo）───────────────────────
-install_rust() {
-    if command -v cargo &>/dev/null; then
-        echo ">>> Rust 已安装: $(cargo --version)"
-        return
+if [ "$MODE" != package ]; then
+    for command in npm cargo pkg-config cc; do require_command "$command"; done
+    if ! pkg-config --exists gtk+-3.0 webkit2gtk-4.1 ayatana-appindicator3-0.1 openssl; then
+        echo "error: 缺少系统开发包。请在终端手动执行：" >&2
+        echo "sudo apt-get install --no-install-recommends build-essential pkg-config libssl-dev libgtk-3-dev libayatana-appindicator3-dev libwebkit2gtk-4.1-dev" >&2
+        exit 1
     fi
-    echo ">>> 安装 Rust toolchain (rustup)..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
-    echo ">>> Rust 安装完成: $(cargo --version)"
-}
+    [ -x "$PROJECT_DIR/node_modules/.bin/vite" ] || {
+        echo "error: 缺少前端依赖。请在 apps/codex-plus-manager 中执行 npm ci --ignore-scripts。" >&2
+        exit 1
+    }
+    echo "系统与前端构建依赖检查通过；Rust 依赖请用 cargo fetch --locked 准备。"
+    [ "$MODE" != check ] || exit 0
+    (cd "$PROJECT_DIR" && npm run vite:build)
+    cargo build --locked --release -p codex-plus-manager --bin codex-plus-plus
+fi
 
-# ── 3. 构建前端 ──────────────────────────────────────────────
-build_frontend() {
-    echo ">>> 构建前端..."
-    cd "$PROJECT_DIR"
-    # vite 需要 node 在 PATH 上；允许通过 NODE_BIN 指定非 PATH 中的安装。
-    if [ -n "$NODE_BIN" ] && [ -x "$NODE_BIN" ]; then
-        export PATH="$(dirname "$NODE_BIN"):$PATH"
-    fi
-    local PM="$PNPM_BIN"
-    if [ -z "$PM" ] || [ ! -x "$PM" ]; then
-        PM="$(command -v pnpm || true)"
-    fi
-    if [ -z "$PM" ]; then
-        echo "error: 找不到 pnpm。请安装（npm i -g pnpm）或用 PNPM_BIN=/path/to/pnpm 指定。" >&2
-        return 1
-    fi
-    export PATH="$(dirname "$PM"):$PATH"
-    "$PM" install
-    # Build vite directly (skip npm/pnpm wrapper issues)
-    node_modules/.bin/vite build
-    echo ">>> 前端构建完成"
-}
+[ -x "$BINARY" ] || { echo "error: 缺少 release 二进制：$BINARY" >&2; exit 1; }
+mkdir -p "$OUTPUT_DIR"
+# 每次使用独立目录，失败时保留便于诊断，不清理或覆盖已有安装包。
+BUILD_DIR="$(mktemp -d "$OUTPUT_DIR/stage-XXXXXXXX")"
+DEB_DIR="$BUILD_DIR/package"
+STAGE="$DEB_DIR/usr"
+DEB_PATH="$OUTPUT_DIR/${PACKAGE_NAME}_${VERSION}_${ARCH}.deb"
+[ ! -e "$DEB_PATH" ] || { echo "error: 安装包已存在，请指定新版本：$DEB_PATH" >&2; exit 1; }
+mkdir -p "$DEB_DIR/DEBIAN" "$STAGE/bin" "$STAGE/share/applications" \
+    "$STAGE/share/icons/hicolor/128x128/apps" "$STAGE/share/doc/$PACKAGE_NAME" "$BUILD_DIR/debian"
+install -m 755 "$BINARY" "$STAGE/bin/$PACKAGE_NAME"
+install -m 644 "$PROJECT_DIR/src-tauri/icons/icon.png" "$STAGE/share/icons/hicolor/128x128/apps/$PACKAGE_NAME.png"
+for document in README.md LICENSE; do
+    install -m 644 "$REPO_DIR/$document" "$STAGE/share/doc/$PACKAGE_NAME/"
+done
+install -m 644 "$SCRIPT_DIR/README.md" "$STAGE/share/doc/$PACKAGE_NAME/Ubuntu.md"
+install -m 644 "$SCRIPT_DIR/codex-plus-plus.desktop" "$STAGE/share/applications/$PACKAGE_NAME.desktop"
 
-# ── 4. 构建 Rust 二进制 ──────────────────────────────────────
-build_rust() {
-    echo ">>> 构建 Rust 二进制..."
-    export PATH="$HOME/.cargo/bin:$PATH"
-    cargo build --release -p codex-plus-manager
-    echo ">>> Rust 构建完成"
-}
-
-# ── 5. 打包 .deb ─────────────────────────────────────────────
-package_deb() {
-    echo ">>> 打包 .deb..."
-    local stage="$DEB_DIR/usr"
-    local deb_name="${PACKAGE_NAME}_${VERSION}_${ARCH}.deb"
-    local deb_path="$REPO_DIR/dist/linux/$deb_name"
-
-    mkdir -p "$BUILD_DIR"
-    mkdir -p "$(dirname "$deb_path")"
-
-    # Clean previous build
-    rm -rf "$DEB_DIR"
-    mkdir -p "$DEB_DIR"
-
-    # ── 目录结构 ──
-    mkdir -p "$stage/bin"
-    mkdir -p "$stage/share/applications"
-    mkdir -p "$stage/share/icons/hicolor/128x128/apps"
-    mkdir -p "$stage/share/doc/$PACKAGE_NAME"
-    mkdir -p "$DEB_DIR/DEBIAN"
-    mkdir -p "$stage/lib/${PACKAGE_NAME}"
-
-    # ── 复制二进制 ──
-    cp "$REPO_DIR/target/release/codex-plus-plus" "$stage/bin/"
-    chmod 755 "$stage/bin/codex-plus-plus"
-
-    # ── 复制前端资源 ──
-    if [ -d "$PROJECT_DIR/dist" ]; then
-        cp -r "$PROJECT_DIR/dist" "$stage/lib/${PACKAGE_NAME}/"
-    fi
-
-    # ── 复制图标 ──
-    local icon_src="$PROJECT_DIR/src-tauri/icons/icon.png"
-    if [ -f "$icon_src" ]; then
-        cp "$icon_src" "$stage/share/icons/hicolor/128x128/apps/${PACKAGE_NAME}.png"
-    fi
-
-    # ── Desktop 文件 ──
-    cat > "$stage/share/applications/${PACKAGE_NAME}.desktop" <<'EOF'
-[Desktop Entry]
-Name=Codex++
-Comment=Configure and launch the official Codex desktop app
-Exec=codex-plus-plus %u
-Icon=codex-plus-plus
-Type=Application
-Categories=Development;Utility;
-Terminal=false
-StartupNotify=true
-MimeType=x-scheme-handler/codexplusplus;x-scheme-handler/dreamskin;
-EOF
-
-    # ── 复制文档 ──
-    cp "$REPO_DIR/README.md"      "$stage/share/doc/${PACKAGE_NAME}/"
-    cp "$REPO_DIR/CHANGELOG.md"   "$stage/share/doc/${PACKAGE_NAME}/"
-    cp "$REPO_DIR/LICENSE"        "$stage/share/doc/${PACKAGE_NAME}/"
-
-    # ── control 文件 ──
-    local installed_size
-    installed_size=$(du -sk "$stage" | awk '{print $1}')
-    cat > "$DEB_DIR/DEBIAN/control" <<EOF
-Package: ${PACKAGE_NAME}
-Version: ${VERSION}
-Section: misc
+# 根据实际二进制计算依赖，避免写死 Ubuntu 版本的 t64 包名和 libc 版本。
+cat > "$BUILD_DIR/debian/control" <<CONTROL
+Source: $PACKAGE_NAME
+Section: utils
 Priority: optional
-Architecture: ${ARCH}
-Maintainer: BigPizzaV3 <1727732@qq.com>
-Installed-Size: 70620
-Depends: libc6 (>= 2.34), libgcc-s1 (>= 4.2), libstdc++6 (>= 13), libdbus-1-3, libglib2.0-0t64, libgtk-3-0t64, libwebkit2gtk-4.1-0, libsoup-3.0-0, libjavascriptcoregtk-4.1-0, libssl3t64 (>= 3.0.0), libz3-4, libatspi2.0-0t64, libasound2t64
+Maintainer: CodexPlusPlus contributors
 
-Recommends: codex
-Description: Codex++ configures and launches OpenAI Codex / ChatGPT desktop apps.
- It provides provider switching, protocol conversion, session management and UI enhancements
- via Chromium DevTools Protocol and a local helper service, without modifying the official
- app.asar or writing patches to the installation directory.
- .
- Includes one application, codex-plus-plus, for provider and model configuration,
- sessions, enhancements and launching the official desktop app from its window.
-EOF
-
-    # ── postinst 脚本 ──
-    cat > "$DEB_DIR/DEBIAN/postinst" <<'EOF'
+Package: $PACKAGE_NAME
+Architecture: any
+Description: Codex++ desktop manager
+CONTROL
+DEPENDENCIES="$(cd "$BUILD_DIR" && dpkg-shlibdeps -O -e"$STAGE/bin/$PACKAGE_NAME")"
+DEPENDENCIES="${DEPENDENCIES#shlibs:Depends=}"
+[ -n "$DEPENDENCIES" ] || { echo "error: 无法计算动态库依赖。" >&2; exit 1; }
+INSTALLED_SIZE="$(du -sk "$STAGE" | awk '{print $1}')"
+cat > "$DEB_DIR/DEBIAN/control" <<CONTROL
+Package: $PACKAGE_NAME
+Version: $VERSION
+Section: utils
+Priority: optional
+Architecture: $ARCH
+Maintainer: CodexPlusPlus contributors
+Installed-Size: $INSTALLED_SIZE
+Depends: $DEPENDENCIES, libayatana-appindicator3-1, xdg-utils
+Description: Codex++ provider and model manager for Codex desktop
+ Configure third-party providers and models, manage sessions and launch
+ the separately installed Codex / ChatGPT desktop app with UI enhancements.
+CONTROL
+cat > "$DEB_DIR/DEBIAN/postinst" <<'POSTINST'
 #!/bin/sh
 set -e
-if [ -d "/usr/share/icons/hicolor" ]; then
-    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor/ 2>/dev/null || true
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications || true
 fi
-if [ -d "/usr/share/applications" ]; then
-    update-desktop-database -q /usr/share/applications/ 2>/dev/null || true
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
 fi
-exit 0
-EOF
-    chmod 755 "$DEB_DIR/DEBIAN/postinst"
-
-    # ── prerm 脚本 ──
-    cat > "$DEB_DIR/DEBIAN/prerm" <<'EOF'
-#!/bin/sh
-set -e
-if [ -d "/usr/share/icons/hicolor" ]; then
-    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor/ 2>/dev/null || true
-fi
-exit 0
-EOF
-    chmod 755 "$DEB_DIR/DEBIAN/prerm"
-
-    # ── 创建 deb ──
-    dpkg-deb --build "$DEB_DIR" "$deb_path"
-    echo ">>> .deb 构建完成: $deb_path"
-}
-
-# ── 主流程 ─────────────────────────────────────────────────
-main() {
-    install_system_deps
-    install_rust
-    build_frontend
-    build_rust
-    package_deb
-
-    echo ""
-    echo "=== 构建完成 ==="
-    local deb_name="${PACKAGE_NAME}_${VERSION}_${ARCH}.deb"
-    echo "Deb 包路径: $REPO_DIR/dist/linux/$deb_name"
-    echo ""
-    echo "安装命令: sudo dpkg -i $REPO_DIR/dist/linux/$deb_name"
-}
-
-main "$@"
+POSTINST
+chmod 755 "$DEB_DIR/DEBIAN/postinst"
+dpkg-deb --root-owner-group --build "$DEB_DIR" "$DEB_PATH"
+dpkg-deb --info "$DEB_PATH"
+echo "安装包：$DEB_PATH"
+echo "安装（请在终端手动执行）：sudo apt install \"$DEB_PATH\""
+echo "本地试运行：$STAGE/bin/$PACKAGE_NAME"

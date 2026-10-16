@@ -447,8 +447,11 @@ pub fn resolve_codex_app_dir(app_dir: Option<&Path>) -> Option<PathBuf> {
     {
         return find_linux_codex_app_default();
     }
-    // Windows: try MS Store version first, then standalone install
-    find_latest_codex_app_dir_default().or_else(|| find_standalone_codex_app_dir())
+    #[cfg(not(target_os = "linux"))]
+    {
+        // Windows: try MS Store version first, then standalone install
+        find_latest_codex_app_dir_default().or_else(|| find_standalone_codex_app_dir())
+    }
 }
 
 /// Search for standalone Codex installations (non-MS Store).
@@ -887,6 +890,10 @@ pub fn codex_app_version(app_dir: &Path) -> Option<String> {
     if app_dir.extension() == Some(OsStr::new("app")) {
         return macos_app_version(app_dir);
     }
+    #[cfg(target_os = "linux")]
+    if let Some(version) = linux_package_version(app_dir) {
+        return Some(version);
+    }
     let package_dir = if app_dir
         .file_name()
         .and_then(OsStr::to_str)
@@ -907,6 +914,15 @@ pub fn codex_app_version(app_dir: &Path) -> Option<String> {
         // unknown（issue #1160）。
         .or_else(|| codex_manifest_version(package_dir))
         .or_else(|| codex_manifest_version(app_dir))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_package_version(app_dir: &Path) -> Option<String> {
+    let contents =
+        std::fs::read_to_string(app_dir.join("resources/linux-package-metadata.json")).ok()?;
+    let metadata: serde_json::Value = serde_json::from_str(&contents).ok()?;
+    let version = metadata.get("version")?.as_str()?.trim();
+    is_version_like(version).then(|| version.to_string())
 }
 
 /// 从解包目录里形如 `149.0.7827.115.manifest` 的清单文件名取版本号。

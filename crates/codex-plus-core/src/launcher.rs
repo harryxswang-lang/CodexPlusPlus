@@ -1304,6 +1304,14 @@ impl LaunchHooks for DefaultLaunchHooks {
             });
         }
 
+        #[cfg(target_os = "linux")]
+        if !isolated_multi_instance && crate::watcher_linux::app_is_running(app_dir) {
+            anyhow::bail!(
+                "Codex / ChatGPT 桌面版已在运行。请先从桌面版菜单退出，再从 Codex++ 启动，\
+                 以便第三方模型和增强功能使用带调试端口的新进程。"
+            );
+        }
+
         let command = build_codex_command(app_dir, debug_port, &launch_extra_args);
         let executable = command
             .first()

@@ -303,6 +303,8 @@ fn default_install_root_uses_platform_strategy() {
             "windows-known-folder"
         } else if cfg!(target_os = "macos") {
             "macos-applications"
+        } else if cfg!(target_os = "linux") {
+            "xdg-applications"
         } else {
             "user-dirs-desktop"
         }

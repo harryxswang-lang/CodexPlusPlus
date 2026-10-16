@@ -5544,6 +5544,21 @@ pub async fn repair_shortcuts() -> InstallActionResult {
 
 #[tauri::command]
 pub async fn check_update() -> CommandResult<Value> {
+    if cfg!(target_os = "linux") {
+        return CommandResult {
+            status: "not_checked".to_string(),
+            message: "Ubuntu 本地版请使用本 fork 构建的 .deb 手动更新。".to_string(),
+            payload: json!({
+                "currentVersion": codex_plus_core::version::VERSION,
+                "latestVersion": Value::Null,
+                "releaseSummary": "Ubuntu 本地版暂不提供自动更新。",
+                "assetName": Value::Null,
+                "assetUrl": Value::Null,
+                "updateAvailable": false,
+                "progress": 0
+            }),
+        };
+    }
     match codex_plus_core::update::check_for_update(codex_plus_core::version::VERSION).await {
         Ok(update) => {
             let status = if update.update_available {
@@ -5613,6 +5628,9 @@ pub async fn perform_update(
 async fn perform_update_inner(
     release: Option<codex_plus_core::update::Release>,
 ) -> CommandResult<Value> {
+    if cfg!(target_os = "linux") {
+        return failed("Ubuntu 本地版请使用本 fork 构建的 .deb 手动更新。", json!({ "progress": 0 }));
+    }
     let Some(release) = release else {
         return failed(
             "请先检查更新并选择可下载的 Release asset。",
@@ -7455,7 +7473,12 @@ fn open_url(url: &str) -> anyhow::Result<()> {
     }
     #[cfg(not(windows))]
     {
-        std::process::Command::new("open")
+        let opener = if cfg!(target_os = "linux") {
+            "xdg-open"
+        } else {
+            "open"
+        };
+        std::process::Command::new(opener)
             .arg(url)
             .spawn()
             .map(|_| ())
@@ -8444,7 +8467,21 @@ base_url = "https://example.invalid/v1"
         let result = tauri::async_runtime::block_on(perform_update_inner(None));
 
         assert_eq!(result.status, "failed");
-        assert!(result.message.contains("请先检查更新"));
+        if cfg!(target_os = "linux") {
+            assert!(result.message.contains(".deb 手动更新"));
+        } else {
+            assert!(result.message.contains("请先检查更新"));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_update_check_does_not_offer_upstream_platform_assets() {
+        let result = tauri::async_runtime::block_on(check_update());
+        assert_eq!(result.status, "not_checked");
+        assert_eq!(result.payload["updateAvailable"], false);
+        assert!(result.payload["assetUrl"].is_null());
+        assert!(result.message.contains(".deb 手动更新"));
     }
 
     #[test]
